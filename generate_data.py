@@ -27,15 +27,15 @@ import random
 np.random.seed(42)
 random.seed(42)
 
+# Configuration
+N_ROWS = 2_000_000  # Full dataset
+BASE_CONVERSION_RATE = 0.015  # 1.5% baseline (will be multiplied up to ~4-6% by positive factors)
+
 print("="*70)
 print("SmartAsset Lead Data Generator")
 print("="*70)
-print(f"\nGenerating 2,000,000 lead records...")
+print(f"\nGenerating {N_ROWS:,} lead records...")
 print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-
-# Configuration
-N_ROWS = 2_000_000
-BASE_CONVERSION_RATE = 0.04  # 4% baseline
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -102,16 +102,23 @@ data = {
 }
 
 # Employment status (correlated with age)
-employment_probs = np.where(age < 65, 
-                           np.where(age < 60, [0.75, 0.15, 0.05, 0.05], [0.60, 0.15, 0.20, 0.05]),
-                           [0.10, 0.05, 0.80, 0.05])
 employment_choices = ['employed', 'self-employed', 'retired', 'other']
-data['employment_status'] = np.random.choice(employment_choices, N_ROWS, p=[0.65, 0.15, 0.15, 0.05])
 
-# Adjust employment for age (more retirees in older cohorts)
-retired_mask = age > 65
-data['employment_status'] = np.where(retired_mask & (np.random.random(N_ROWS) < 0.70), 
-                                     'retired', data['employment_status'])
+# Generate employment status with age-based logic
+employment_status = []
+for a in age:
+    if a < 60:
+        # Younger: mostly employed
+        probs = [0.75, 0.15, 0.05, 0.05]
+    elif a < 65:
+        # Pre-retirement: mix of employed and retired
+        probs = [0.60, 0.15, 0.20, 0.05]
+    else:
+        # 65+: mostly retired
+        probs = [0.10, 0.05, 0.80, 0.05]
+    employment_status.append(np.random.choice(employment_choices, p=probs))
+
+data['employment_status'] = np.array(employment_status)
 
 # Marital status
 data['marital_status'] = np.random.choice(
@@ -128,12 +135,14 @@ has_children_prob = np.where(
 data['has_children'] = (np.random.random(N_ROWS) < has_children_prob).astype(int)
 
 # Geographic data
-states = ['CA', 'NY', 'TX', 'FL', 'IL', 'PA', 'OH', 'GA', 'NC', 'MI', 
+states = ['CA', 'NY', 'TX', 'FL', 'IL', 'PA', 'OH', 'GA', 'NC', 'MI',
           'NJ', 'VA', 'WA', 'AZ', 'MA', 'TN', 'IN', 'MO', 'MD', 'WI',
           'CO', 'MN', 'SC', 'AL', 'LA', 'KY', 'OR', 'OK', 'CT', 'UT',
           'IA', 'NV', 'AR', 'MS', 'KS', 'NM', 'NE', 'WV', 'ID', 'HI',
           'NH', 'ME', 'MT', 'RI', 'DE', 'SD', 'ND', 'AK', 'VT', 'WY']
-state_weights = [0.12, 0.06, 0.09, 0.065, 0.04] + [0.02] * 15 + [0.01] * 30
+state_weights = np.array([0.12, 0.06, 0.09, 0.065, 0.04] + [0.02] * 15 + [0.01] * 30)
+# Normalize to ensure they sum to exactly 1.0
+state_weights = state_weights / state_weights.sum()
 data['state'] = np.random.choice(states, N_ROWS, p=state_weights)
 
 # Metro area (80% in metro)
@@ -182,13 +191,21 @@ data['time_horizon'] = np.random.choice(
 )
 
 # Risk tolerance (correlated with age - older = more conservative)
-risk_probs = np.where(age < 40, [0.15, 0.45, 0.40],
-                     np.where(age < 60, [0.35, 0.50, 0.15], [0.60, 0.35, 0.05]))
-data['risk_tolerance'] = np.random.choice(
-    ['conservative', 'moderate', 'aggressive'],
-    N_ROWS,
-    p=[0.40, 0.45, 0.15]  # Overall distribution
-)
+risk_choices = ['conservative', 'moderate', 'aggressive']
+risk_tolerance = []
+for a in age:
+    if a < 40:
+        # Younger: more aggressive
+        probs = [0.15, 0.45, 0.40]
+    elif a < 60:
+        # Middle age: balanced
+        probs = [0.35, 0.50, 0.15]
+    else:
+        # 60+: more conservative
+        probs = [0.60, 0.35, 0.05]
+    risk_tolerance.append(np.random.choice(risk_choices, p=probs))
+
+data['risk_tolerance'] = np.array(risk_tolerance)
 
 print("Step 3/6: Generating lead source and behavior...")
 
@@ -259,14 +276,16 @@ goal_calc_map = {
     'investment_advice': 'investment',
     'tax_planning': 'tax'
 }
+calculator_type_array = np.array(data['calculator_type'])
 for goal, calc in goal_calc_map.items():
     mask = (np.array(data['primary_goal']) == goal) & (data['used_calculator'] == 1)
     if mask.sum() > 0:
         # 70% chance to use matching calculator
         should_match = np.random.random(mask.sum()) < 0.70
-        data['calculator_type'] = np.where(mask, 
-                                           np.where(should_match, calc, data['calculator_type']),
-                                           data['calculator_type'])
+        # Update only the masked positions
+        calculator_type_array[mask] = np.where(should_match, calc, calculator_type_array[mask])
+
+data['calculator_type'] = calculator_type_array
 
 # Number of sessions
 data['num_sessions'] = np.where(
@@ -332,10 +351,10 @@ for bracket, mult in asset_multiplier.items():
     conversion_prob[mask] *= mult
 
 # Factor 2: Phone answered (HUGE predictor)
-conversion_prob *= np.where(data['phone_answered'] == 1, 4.0, 1.0)
+conversion_prob *= np.where(data['phone_answered'] == 1, 4.0, 0.5)
 
 # Factor 3: Advisor specialization match
-conversion_prob *= np.where(data['advisor_specialization_match'] == 1, 1.8, 1.0)
+conversion_prob *= np.where(data['advisor_specialization_match'] == 1, 1.8, 0.7)
 
 # Factor 4: Lead source quality
 source_multiplier = {
@@ -343,23 +362,23 @@ source_multiplier = {
     'organic_search': 1.3,
     'direct': 1.2,
     'email_campaign': 1.0,
-    'social_media': 0.9,
-    'paid_search': 0.85
+    'social_media': 0.8,
+    'paid_search': 0.7
 }
 for source, mult in source_multiplier.items():
     mask = np.array(data['lead_source']) == source
     conversion_prob[mask] *= mult
 
 # Factor 5: Engagement signals
-conversion_prob *= np.where(data['used_calculator'] == 1, 1.4, 1.0)
-conversion_prob *= np.where(data['return_visitor'] == 1, 1.3, 1.0)
+conversion_prob *= np.where(data['used_calculator'] == 1, 1.4, 0.7)
+conversion_prob *= np.where(data['return_visitor'] == 1, 1.3, 0.75)
 
 # Factor 6: Time on site (more time = more serious)
-time_boost = np.clip(data['time_on_site_seconds'] / 600, 0.7, 1.5)
+time_boost = np.clip(data['time_on_site_seconds'] / 600, 0.5, 1.4)
 conversion_prob *= time_boost
 
 # Factor 7: Device type (desktop slightly better)
-device_multiplier = {'desktop': 1.2, 'tablet': 1.0, 'mobile': 0.9}
+device_multiplier = {'desktop': 1.2, 'tablet': 1.0, 'mobile': 0.8}
 for device, mult in device_multiplier.items():
     mask = np.array(data['device_type']) == device
     conversion_prob[mask] *= mult
@@ -368,27 +387,27 @@ for device, mult in device_multiplier.items():
 age_factor = np.where(
     (age >= 55) & (age <= 65), 1.4,
     np.where((age >= 45) & (age < 55), 1.2,
-            np.where(age < 35, 0.7, 1.0))
+            np.where(age < 35, 0.6, 1.0))
 )
 conversion_prob *= age_factor
 
 # Factor 9: Already has advisor (lower conversion)
-conversion_prob *= np.where(np.array(data['current_advisor']) == 'yes', 0.6, 1.0)
+conversion_prob *= np.where(np.array(data['current_advisor']) == 'yes', 0.4, 1.0)
 
 # Factor 10: Late night form fills (2am-4am) = lower quality
 late_night = (hour_dist >= 2) & (hour_dist <= 4)
-conversion_prob *= np.where(late_night, 0.5, 1.0)
+conversion_prob *= np.where(late_night, 0.3, 1.0)
 
 # Factor 11: Very fast form completion (suspicious)
 very_fast = data['form_completion_time'] < 45
-conversion_prob *= np.where(very_fast, 0.6, 1.0)
+conversion_prob *= np.where(very_fast, 0.4, 1.0)
 
 # Factor 12: Advisor rating boost
-rating_boost = (data['advisor_rating'] - 3.5) * 0.3 + 1
+rating_boost = (data['advisor_rating'] - 3.5) * 0.15 + 1
 conversion_prob *= rating_boost
 
 # Factor 13: Local advisor preference
-conversion_prob *= np.where(np.array(data['geographic_distance']) == 'local', 1.2, 1.0)
+conversion_prob *= np.where(np.array(data['geographic_distance']) == 'local', 1.2, 0.9)
 
 # Factor 14: Thursday boost (arbitrary but realistic quirk)
 conversion_prob *= np.where(np.array(data['day_of_week']) == 'Thursday', 1.15, 1.0)
@@ -505,7 +524,7 @@ print(f"  File saved: {output_file}")
 print(f"\nConversion Statistics:")
 print(f"  Total conversions: {df['converted'].sum():,}")
 print(f"  Conversion rate: {df['converted'].mean():.2%}")
-print(f"  (Target was ~{BASE_CONVERSION_RATE:.1%})")
+print(f"  (Target was 4-6%, starting from {BASE_CONVERSION_RATE:.1%} base)")
 
 print(f"\nData Quality:")
 print(f"  Missing values by column:")
